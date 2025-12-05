@@ -21,6 +21,14 @@ type TaskListProps = {
 }
 
 export function TaskList({ tasks, selectedId, onSelect, onCreate, onDelete }: TaskListProps) {
+  const sortedTasks = [...tasks].sort((a, b) => {
+    const statusWeight: Record<Task['status'], number> = { todo: 0, 'in-progress': 1, done: 2 }
+    const statusDiff = statusWeight[a.status] - statusWeight[b.status]
+    if (statusDiff !== 0) return statusDiff
+    if (a.order !== b.order) return a.order - b.order
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+  })
+
   return (
     <div className="panel list-panel">
       <div className="panel-header">
@@ -34,7 +42,7 @@ export function TaskList({ tasks, selectedId, onSelect, onCreate, onDelete }: Ta
       </div>
       <div className="task-list" role="list">
         {tasks.length === 0 && <p className="empty">タスクがありません。追加してください。</p>}
-        {tasks.map((task) => (
+        {sortedTasks.map((task) => (
           <article
             key={task.id}
             role="listitem"
@@ -52,6 +60,7 @@ export function TaskList({ tasks, selectedId, onSelect, onCreate, onDelete }: Ta
             <div className="task-meta">
               <span className={priorityTone[task.priority]}>{priorityLabel[task.priority]}</span>
               <span className="badge-outline">{statusLabel[task.status]}</span>
+              <span className="muted">並び順: {task.order + 1}</span>
               {task.dueDate && <span className="muted">期限: {task.dueDate}</span>}
             </div>
           </article>

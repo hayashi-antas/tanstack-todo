@@ -9,6 +9,12 @@ type CollectionConfig<TSchema extends z.ZodTypeAny> = {
   primaryKey: keyof z.infer<TSchema>
 }
 
+const statusOrder: Record<TaskStatus, number> = {
+  todo: 0,
+  'in-progress': 1,
+  done: 2,
+}
+
 export function createCollection<TSchema extends z.ZodTypeAny>(config: CollectionConfig<TSchema>) {
   return config
 }
@@ -54,7 +60,7 @@ class TanStackDatabase {
     if (saved) {
       const parsed = z.array(taskSchema).safeParse(JSON.parse(saved))
       if (parsed.success) {
-        this.tasks = parsed.data
+        this.tasks = this.normalizeOrders(parsed.data)
         return
       }
     }
@@ -70,8 +76,64 @@ class TanStackDatabase {
     return new Date().toISOString()
   }
 
+  private nextOrderForStatus(status: TaskStatus) {
+    const inStatus = this.tasks.filter((task) => task.status === status)
+    if (inStatus.length === 0) return 0
+    return Math.max(...inStatus.map((task) => task.order ?? 0)) + 1
+  }
+
+  private normalizeOrders(tasks: Task[]) {
+    const buckets: Record<TaskStatus, Task[]> = {
+      todo: [],
+      'in-progress': [],
+      done: [],
+    }
+
+    for (const task of tasks) {
+      buckets[task.status].push({ ...task, order: task.order ?? 0 })
+    }
+
+    const normalized: Task[] = []
+
+    (Object.keys(buckets) as TaskStatus[]).forEach((status) => {
+      const sorted = buckets[status].sort((a, b) => {
+        const orderDiff = (a.order ?? 0) - (b.order ?? 0)
+        if (orderDiff !== 0) return orderDiff
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      })
+
+      sorted.forEach((task, index) => {
+        normalized.push({ ...task, status, order: index })
+      })
+    })
+
+    return normalized
+  }
+
+  private normalizeStatusOrders(status: TaskStatus) {
+    const ordered = this.tasks
+      .filter((task) => task.status === status)
+      .sort((a, b) => {
+        const orderDiff = (a.order ?? 0) - (b.order ?? 0)
+        if (orderDiff !== 0) return orderDiff
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      })
+
+    ordered.forEach((task, index) => {
+      const idx = this.tasks.findIndex((t) => t.id === task.id)
+      if (idx !== -1) {
+        this.tasks[idx] = { ...this.tasks[idx], order: index }
+      }
+    })
+  }
+
   async getTasks(): Promise<Task[]> {
-    return [...this.tasks].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    return [...this.tasks].sort((a, b) => {
+      const statusDiff = statusOrder[a.status] - statusOrder[b.status]
+      if (statusDiff !== 0) return statusDiff
+      if (a.order !== b.order) return (a.order ?? 0) - (b.order ?? 0)
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    })
   }
 
   async addTask(input: TaskInput): Promise<Task> {
@@ -80,10 +142,12 @@ class TanStackDatabase {
     const task: Task = {
       id: crypto.randomUUID(),
       ...parsed,
+      order: parsed.order ?? this.nextOrderForStatus(parsed.status),
       createdAt: timestamp,
       updatedAt: timestamp,
     }
-    this.tasks.unshift(task)
+    this.tasks.push(task)
+    this.normalizeStatusOrders(task.status)
     this.persist()
     return task
   }
@@ -91,18 +155,28 @@ class TanStackDatabase {
   async updateTask(update: TaskUpdate): Promise<Task> {
     const idx = this.tasks.findIndex((t) => t.id === update.id)
     if (idx === -1) throw new Error('Task not found')
+    const originalStatus = this.tasks[idx].status
+    const targetStatus = update.status ?? this.tasks[idx].status
     const merged: Task = taskSchema.parse({
       ...this.tasks[idx],
+      status: targetStatus,
+      order: update.order ?? this.tasks[idx].order ?? this.nextOrderForStatus(targetStatus),
       ...update,
       updatedAt: this.now(),
     })
     this.tasks[idx] = merged
+    this.normalizeStatusOrders(originalStatus)
+    this.normalizeStatusOrders(merged.status)
     this.persist()
     return merged
   }
 
   async deleteTask(id: string): Promise<void> {
+    const removed = this.tasks.find((task) => task.id === id)
     this.tasks = this.tasks.filter((task) => task.id !== id)
+    if (removed) {
+      this.normalizeStatusOrders(removed.status)
+    }
     this.persist()
   }
 
