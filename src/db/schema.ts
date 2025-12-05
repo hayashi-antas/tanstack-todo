@@ -13,6 +13,7 @@ export const taskSchema = z.object({
   status: taskStatusSchema.default('todo'),
   priority: taskPrioritySchema.default('medium'),
   dueDate: z.string().nullable().optional(),
+  order: z.number().int().nonnegative().default(0),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -23,6 +24,7 @@ export const taskInputSchema = taskSchema
   .omit({ id: true, createdAt: true, updatedAt: true })
   .extend({
     dueDate: z.string().nullable().optional(),
+    order: z.number().int().nonnegative().optional(),
   })
 
 export type TaskInput = z.infer<typeof taskInputSchema>
