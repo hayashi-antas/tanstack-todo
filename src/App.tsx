@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { DndContext, PointerSensor, type DragEndEvent, useDroppable, useSensor, useSensors } from '@dnd-kit/core'
+import { DndContext, PointerSensor, closestCorners, type DragEndEvent, useDroppable, useSensor, useSensors } from '@dnd-kit/core'
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -13,6 +13,7 @@ function App() {
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<string | undefined>()
   const [filters, setFilters] = useState<TaskFilter>({ includeDone: true })
+  const statuses: TaskStatus[] = ['todo', 'in-progress', 'done']
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   const tasksQuery = useQuery({ queryKey: ['tasks'], queryFn: () => db.getTasks() })
@@ -32,7 +33,7 @@ function App() {
     for (const task of filteredTasks) {
       base[task.status].push(task)
     }
-    ;(Object.keys(base) as TaskStatus[]).forEach((status) => {
+    statuses.forEach((status) => {
       base[status].sort((a, b) => a.order - b.order)
     })
     return base
@@ -86,7 +87,7 @@ function App() {
     if (!tasksQuery.data) return
     const updates: Promise<unknown>[] = []
 
-    ;(['todo', 'in-progress', 'done'] as const).forEach((status) => {
+    statuses.forEach((status) => {
       const originals = tasksQuery.data
         .filter((task) => task.status === status)
         .sort((a, b) => a.order - b.order)
@@ -114,24 +115,16 @@ function App() {
     const { active, over } = event
     if (!over || !tasksQuery.data) return
 
-    const activeId = active.id as string
-    const overId = over.id as string
+    const activeId = String(active.id)
+    const overId = String(over.id)
     const activeTask = tasksQuery.data.find((task) => task.id === activeId)
     if (!activeTask) return
 
-    const sourceStatus = activeTask.status
-    let targetStatus: TaskStatus = sourceStatus
-    let targetIndex = 0
+    const sourceStatus = (active.data.current?.sortable?.containerId as TaskStatus | undefined) ?? activeTask.status
+    const overContainer = (over.data.current?.sortable?.containerId as TaskStatus | undefined) ??
+      (overId.startsWith('column-') ? (overId.replace('column-', '') as TaskStatus) : undefined)
 
-    if (overId.startsWith('column-')) {
-      targetStatus = overId.replace('column-', '') as TaskStatus
-      targetIndex = statusBuckets[targetStatus].length
-    } else {
-      const overTask = tasksQuery.data.find((task) => task.id === overId)
-      if (!overTask) return
-      targetStatus = overTask.status
-      targetIndex = statusBuckets[targetStatus].findIndex((task) => task.id === overId)
-    }
+    if (!overContainer) return
 
     const nextBuckets: Record<TaskStatus, Task[]> = {
       todo: [...statusBuckets.todo],
@@ -143,12 +136,17 @@ function App() {
     const fromIndex = sourceList.findIndex((task) => task.id === activeId)
     if (fromIndex === -1) return
 
-    if (sourceStatus === targetStatus) {
+    let targetIndex = over.data.current?.sortable?.index
+    if (typeof targetIndex !== 'number') {
+      targetIndex = nextBuckets[overContainer].length
+    }
+
+    if (sourceStatus === overContainer) {
       if (fromIndex === targetIndex) return
-      nextBuckets[targetStatus] = arrayMove(sourceList, fromIndex, targetIndex)
+      nextBuckets[overContainer] = arrayMove(sourceList, fromIndex, targetIndex)
     } else {
       const [moved] = sourceList.splice(fromIndex, 1)
-      nextBuckets[targetStatus].splice(targetIndex, 0, { ...moved, status: targetStatus })
+      nextBuckets[overContainer].splice(targetIndex, 0, { ...moved, status: overContainer })
     }
 
     await persistBuckets(nextBuckets)
@@ -186,11 +184,11 @@ function App() {
               <p className="panel-subtitle">GitHub Issues のようにステータスを俯瞰</p>
             </div>
           </div>
-          <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+          <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
             <div className="board-grid">
-              {(['todo', 'in-progress', 'done'] as const).map((status) => (
+              {statuses.map((status) => (
                 <BoardColumn key={status} status={status} count={statusBuckets[status].length}>
-                  <SortableContext items={statusBuckets[status].map((task) => task.id)} strategy={verticalListSortingStrategy}>
+                  <SortableContext id={status} items={statusBuckets[status].map((task) => task.id)} strategy={verticalListSortingStrategy}>
                     {statusBuckets[status].length === 0 && <p className="empty">なし</p>}
                     {statusBuckets[status].map((task) => (
                       <SortableCard key={task.id} task={task} onSelect={(id) => setSelectedId(id)} onStatusChange={handleStatusChange} />
